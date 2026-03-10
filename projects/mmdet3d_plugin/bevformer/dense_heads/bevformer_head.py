@@ -11,6 +11,7 @@ from mmdet.models.dense_heads import DETRHead
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from projects.mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmcv.runner import force_fp32, auto_fp16
+from projects.mmdet3d_plugin.bevformer.debug_collector import collector as _collector
 
 
 @HEADS.register_module()
@@ -139,6 +140,7 @@ class BEVFormerHead(DETRHead):
         bev_mask = torch.zeros((bs, self.bev_h, self.bev_w),
                                device=bev_queries.device).to(dtype)
         bev_pos = self.positional_encoding(bev_mask).to(dtype)
+        _collector.save_head(bev_pos)
 
         if only_bev:  # only use encoder to obtain BEV features, TODO: refine the workaround
             return self.transformer.get_bev_features(

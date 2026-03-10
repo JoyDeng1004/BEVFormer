@@ -21,6 +21,8 @@ from mmcv.utils import ext_loader
 ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
+from ..debug_collector import collector as _collector
+
 
 @ATTENTION.register_module()
 class TemporalSelfAttention(BaseModule):
@@ -173,7 +175,10 @@ class TemporalSelfAttention(BaseModule):
         Returns:
              Tensor: forwarded results with shape [num_query, bs, embed_dims].
         """
-
+        # reference_points.shape - [2,40000,1,2]
+        # if value is not None:
+        #     import pdb; pdb.set_trace()
+        _has_history = value is not None
         if value is None:
             assert self.batch_first
             bs, len_bev, c = query.shape
@@ -181,6 +186,7 @@ class TemporalSelfAttention(BaseModule):
 
             # value = torch.cat([query, query], 0)
 
+        # value.shape - [2,40000,256]
         if identity is None:
             identity = query
         if query_pos is not None:
@@ -194,7 +200,9 @@ class TemporalSelfAttention(BaseModule):
         assert (spatial_shapes[:, 0] * spatial_shapes[:, 1]).sum() == num_value
         assert self.num_bev_queue == 2
 
+        # query.shape - [1,40000,256]
         query = torch.cat([value[:bs], query], -1)
+        # query.shape - [1,40000,512]
         value = self.value_proj(value)
 
         if key_padding_mask is not None:
@@ -204,12 +212,15 @@ class TemporalSelfAttention(BaseModule):
                               num_value, self.num_heads, -1)
 
         sampling_offsets = self.sampling_offsets(query)
+        # sampling_offsets.shape - [1,40000,128]
         sampling_offsets = sampling_offsets.view(
             bs, num_query, self.num_heads,  self.num_bev_queue, self.num_levels, self.num_points, 2)
         attention_weights = self.attention_weights(query).view(
             bs, num_query,  self.num_heads, self.num_bev_queue, self.num_levels * self.num_points)
         attention_weights = attention_weights.softmax(-1)
-
+        _attn_weights_for_exp2 = attention_weights  # (bs, Q, 8, 2, 4) for exp2
+        # sampling_offsets.shape - [1, 40000, 8, 2, 1, 4, 2]
+        # attention_weights.shape - [1, 40000,8,2,4]
         attention_weights = attention_weights.view(bs, num_query,
                                                    self.num_heads,
                                                    self.num_bev_queue,
@@ -227,6 +238,10 @@ class TemporalSelfAttention(BaseModule):
             sampling_locations = reference_points[:, :, None, :, None, :] \
                 + sampling_offsets \
                 / offset_normalizer[None, None, None, :, None, :]
+
+            _collector.save_tsa_sampling(
+                sampling_locations, reference_points, sampling_offsets,
+                _attn_weights_for_exp2, _has_history)
 
         elif reference_points.shape[-1] == 4:
             sampling_locations = reference_points[:, :, None, :, None, :2] \
@@ -259,7 +274,9 @@ class TemporalSelfAttention(BaseModule):
         # fuse history value and current value
         # (num_query, embed_dims, bs*num_bev_queue)-> (num_query, embed_dims, bs, num_bev_queue)
         output = output.view(num_query, embed_dims, bs, self.num_bev_queue)
+        _output_before_fusion = output.clone()
         output = output.mean(-1)
+        _collector.save_tsa_fusion(_output_before_fusion, output, _has_history)
 
         # (num_query, embed_dims, bs)-> (bs, num_query, embed_dims)
         output = output.permute(2, 0, 1)

@@ -17,6 +17,7 @@ from mmcv.runner import force_fp32, auto_fp16
 from mmcv.utils import TORCH_VERSION, digit_version
 from mmcv.utils import ext_loader
 from .custom_base_transformer_layer import MyCustomBaseTransformerLayer
+from ..debug_collector import collector as _collector
 ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
@@ -193,9 +194,11 @@ class BEVFormerEncoder(TransformerLayerSequence):
         reference_points_cam, bev_mask = self.point_sampling(
             ref_3d, self.pc_range, kwargs['img_metas'])
 
-        # bug: this code should be 'shift_ref_2d = ref_2d.clone()', we keep this bug for reproducing our results in paper.
         shift_ref_2d = ref_2d.clone()
         shift_ref_2d += shift[:, None, None, :]
+
+        _collector.save_encoder(ref_2d, shift_ref_2d, shift, prev_bev is not None)
+        _collector.save_scene_meta(kwargs['img_metas'])
 
         # (num_query, bs, embed_dims) -> (bs, num_query, embed_dims)
         bev_query = bev_query.permute(1, 0, 2)
