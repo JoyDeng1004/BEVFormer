@@ -24,6 +24,7 @@ from mmcv.utils import ext_loader
 from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32, \
     MultiScaleDeformableAttnFunction_fp16
 from projects.mmdet3d_plugin.models.utils.bricks import run_time
+from ..debug_collector import collector as _collector
 ext_module = ext_loader.load_ext(
     '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 
@@ -162,6 +163,12 @@ class SpatialCrossAttention(BaseModule):
         queries = self.deformable_attention(query=queries_rebatch.view(bs*self.num_cams, max_len, self.embed_dims), key=key, value=value,
                                             reference_points=reference_points_rebatch.view(bs*self.num_cams, max_len, D, 2), spatial_shapes=spatial_shapes,
                                             level_start_index=level_start_index).view(bs, self.num_cams, max_len, self.embed_dims)
+
+        # Capture SCA debug data from inner deformable attention
+        _sca_sampling_locs = getattr(self.deformable_attention, '_debug_sampling_locations', None)
+        _sca_sampling_offs = getattr(self.deformable_attention, '_debug_sampling_offsets', None)
+        _sca_attn_weights = getattr(self.deformable_attention, '_debug_attention_weights', None)
+
         for j in range(bs):
             for i, index_query_per_img in enumerate(indexes):
                 slots[j, index_query_per_img] += queries[j, i, :len(index_query_per_img)]
@@ -172,7 +179,16 @@ class SpatialCrossAttention(BaseModule):
         slots = slots / count[..., None]
         slots = self.output_proj(slots)
 
-        return self.dropout(slots) + inp_residual
+        query_after = self.dropout(slots) + inp_residual
+
+        # Save SCA data for visualization
+        if _sca_sampling_locs is not None:
+            _collector.save_sca_sampling(
+                _sca_sampling_locs, _sca_sampling_offs, _sca_attn_weights,
+                reference_points_cam, bev_mask, indexes,
+                inp_residual, query_after)
+
+        return query_after
 
 
 @ATTENTION.register_module()
@@ -381,6 +397,12 @@ class MSDeformableAttention3D(BaseModule):
         #  sampling_locations.shape: bs, num_query, num_heads, num_levels, num_all_points, 2
         #  attention_weights.shape: bs, num_query, num_heads, num_levels, num_all_points
         #
+
+        # Store for collector (read by SpatialCrossAttention)
+        self._debug_sampling_locations = sampling_locations
+        self._debug_sampling_offsets = sampling_offsets.view(
+            bs, num_query, num_heads, num_levels, num_all_points, xy)
+        self._debug_attention_weights = attention_weights
 
         if torch.cuda.is_available() and value.is_cuda:
             if value.dtype == torch.float16:

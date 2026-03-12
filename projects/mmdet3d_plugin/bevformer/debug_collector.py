@@ -13,6 +13,7 @@ so this module can be safely imported in production code with zero overhead.
 """
 import os
 import json
+import numpy as np
 import torch
 from datetime import datetime
 
@@ -33,6 +34,7 @@ class _Collector:
         self._encoder_count = 0
         self._head_count = 0
         self._scene_meta_count = 0
+        self._sca_sample_count = 0
         self._done = False
         self._meta = {}
 
@@ -155,6 +157,50 @@ class _Collector:
             print('[Collector] All data collection complete! You can Ctrl+C now.')
 
     # ========================
+    # SCA forward — sampling data (saves exp6)
+    # ========================
+    def save_sca_sampling(self, sampling_locations, sampling_offsets,
+                          attention_weights, reference_points_cam, bev_mask,
+                          indexes, query_before, query_after):
+        """
+        Called from SpatialCrossAttention.forward, after deformable attention.
+        Saves data for Experiment 6 (SCA sampling process).
+
+        Args:
+            sampling_locations: (bs*num_cams, max_len, num_heads, num_levels, num_all_points, 2)
+            sampling_offsets:   same shape
+            attention_weights:  (bs*num_cams, max_len, num_heads, num_levels, num_all_points)
+            reference_points_cam: (num_cams, bs, num_query, D, 2) — normalized
+            bev_mask:           (num_cams, bs, num_query, D)
+            indexes:            list[Tensor] — per-cam valid query indices
+            query_before:       (bs, num_query, embed_dims)
+            query_after:        (bs, num_query, embed_dims)
+        """
+        if not TSA_DEBUG or self._done:
+            return
+        if self._sca_sample_count >= _MAX_FRAMES * _NUM_LAYERS:
+            return
+
+        fi = self._sca_sample_count // _NUM_LAYERS
+        li = self._sca_sample_count % _NUM_LAYERS
+
+        exp6_dir = self._ensure_dir('exp6_sca')
+        torch.save({
+            'sampling_locations': sampling_locations.detach().cpu(),
+            'sampling_offsets': sampling_offsets.detach().cpu(),
+            'attention_weights': attention_weights.detach().cpu(),
+            'reference_points_cam': reference_points_cam.detach().cpu(),
+            'bev_mask': bev_mask.detach().cpu(),
+            'indexes': [idx.detach().cpu() for idx in indexes],
+            'query_before': query_before.detach().cpu(),
+            'query_after': query_after.detach().cpu(),
+            'layer_idx': li, 'frame_idx': fi,
+        }, os.path.join(exp6_dir, f'frame{fi}_layer{li}.pt'))
+
+        print(f'[Collector] SCA exp6:    frame={fi}, layer={li}')
+        self._sca_sample_count += 1
+
+    # ========================
     # Encoder forward (saves exp3)
     # ========================
     def save_encoder(self, ref_2d, shift_ref_2d, shift, has_prev_bev):
@@ -245,6 +291,16 @@ class _Collector:
         with open(os.path.join(meta_dir, f'frame{fi}.json'), 'w') as f:
             json.dump(scene_info, f, indent=2, ensure_ascii=False)
 
+        # Save camera calibration as separate .pt (numpy arrays not JSON-friendly)
+        lidar2img = meta.get('lidar2img', None)
+        img_shape = meta.get('img_shape', None)
+        if lidar2img is not None:
+            calib = {
+                'lidar2img': np.array(lidar2img),
+                'img_shape': img_shape,
+            }
+            torch.save(calib, os.path.join(meta_dir, f'frame{fi}_calib.pt'))
+
         print(f'[Collector] Scene meta: frame={fi}, '
               f'sample_idx={scene_info["sample_idx"]}')
         self._scene_meta_count += 1
@@ -259,10 +315,11 @@ class _Collector:
         self._meta['total_encoder_calls'] = self._encoder_count
         self._meta['total_head_calls'] = self._head_count
         self._meta['total_scene_meta_calls'] = self._scene_meta_count
+        self._meta['total_sca_sample_calls'] = self._sca_sample_count
         self._meta['experiments_collected'] = []
         for exp in ['exp1_sampling_locations', 'exp2_attention_weights',
                     'exp3_reference_points', 'exp4_fusion_output',
-                    'exp5_bev_pos', 'scene_meta']:
+                    'exp5_bev_pos', 'exp6_sca', 'scene_meta']:
             d = os.path.join(_OUTPUT_ROOT, exp)
             if os.path.isdir(d):
                 self._meta['experiments_collected'].append(exp)
