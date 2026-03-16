@@ -37,7 +37,7 @@ from vis_utils import (
     BEV_H, BEV_W, PC_RANGE, CAM_NAMES, CAM_LAYOUT,
     HEAD_COLORS, HEAD_MARKERS, QUERY_COLORS,
     physical_to_bev, query_idx_to_rc,
-    get_representative_query_indices,
+    get_representative_query_indices, norm_to_display,
     get_gt_and_images, load_calib, build_lidar2img,
     project_boxes_to_image, style_bev_ax, draw_bev_boxes,
     mark_queries_on_bev,
@@ -163,8 +163,8 @@ def plot_overview(frame_idx, layer_idx, warp=None):
         sl_curr = sl[1, qidx]  # (8, 1, 4, 2)
         for h in range(min(sl_curr.shape[0], 8)):
             for p in range(sl_curr.shape[2]):
-                sx = sl_curr[h, 0, p, 0].item() * BEV_W
-                sy = sl_curr[h, 0, p, 1].item() * BEV_H
+                sx, sy = norm_to_display(
+                    sl_curr[h, 0, p, 0].item(), sl_curr[h, 0, p, 1].item())
                 ax_curr.plot(sx, sy, marker='.', color=color,
                              markersize=3, alpha=0.5, zorder=8)
 
@@ -177,8 +177,8 @@ def plot_overview(frame_idx, layer_idx, warp=None):
             color = QUERY_COLORS[i % len(QUERY_COLORS)]
             r = ref_2d[qidx, 0]
             s = shift_ref_2d[qidx, 0]
-            rx, ry = r[0].item()*BEV_W, r[1].item()*BEV_H
-            sx, sy = s[0].item()*BEV_W, s[1].item()*BEV_H
+            rx, ry = norm_to_display(r[0].item(), r[1].item())
+            sx, sy = norm_to_display(s[0].item(), s[1].item())
             if abs(rx - sx) > 0.1 or abs(ry - sy) > 0.1:
                 ax_curr.annotate(
                     '', xy=(sx, sy), xytext=(rx, ry),
@@ -198,7 +198,7 @@ def plot_overview(frame_idx, layer_idx, warp=None):
 
         # History ref point
         h_rp = rp[0, qidx, 0]
-        hx, hy = h_rp[0].item() * BEV_W, h_rp[1].item() * BEV_H
+        hx, hy = norm_to_display(h_rp[0].item(), h_rp[1].item())
         ax_hist.plot(hx, hy, 'x', color=color, markersize=12,
                      markeredgewidth=2, zorder=15)
 
@@ -206,8 +206,8 @@ def plot_overview(frame_idx, layer_idx, warp=None):
         sl_hist = sl[0, qidx]  # (8, 1, 4, 2)
         for h in range(min(sl_hist.shape[0], 8)):
             for p in range(sl_hist.shape[2]):
-                sx = sl_hist[h, 0, p, 0].item() * BEV_W
-                sy = sl_hist[h, 0, p, 1].item() * BEV_H
+                sx, sy = norm_to_display(
+                    sl_hist[h, 0, p, 0].item(), sl_hist[h, 0, p, 1].item())
                 ax_hist.plot(sx, sy, marker=HEAD_MARKERS[h % 8],
                              color=HEAD_COLORS[h % 8], markersize=4,
                              markeredgecolor='black', markeredgewidth=0.3,
@@ -215,7 +215,7 @@ def plot_overview(frame_idx, layer_idx, warp=None):
 
         # Cross-panel line: current query -> history sampling center
         con = matplotlib.patches.ConnectionPatch(
-            xyA=(q['col'], q['row']), xyB=(hx, hy),
+            xyA=(q['plot_x'], q['plot_y']), xyB=(hx, hy),
             coordsA='data', coordsB='data',
             axesA=ax_curr, axesB=ax_hist,
             color=color, linewidth=1.2, alpha=0.4, linestyle='--')

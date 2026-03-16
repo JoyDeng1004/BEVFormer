@@ -66,57 +66,122 @@ QUERY_COLORS = [
 ]
 
 # Representative BEV queries defined by physical coordinates (meters)
+# Coordinate system: x = right, y = forward, z = up
 REPRESENTATIVE_QUERIES = {
-    'front_10m':       (10.0,   0.0),   # 正前方 10m
-    'front_left_30m':  (21.2,  21.2),   # 左前方 30m (≈45°)
-    'front_right_20m': (17.3, -10.0),   # 右前方 20m
-    'rear_15m':        (-15.0,  0.0),   # 正后方 15m
+    'front_10m':       (0.0,   10.0),   # 正前方 10m
+    'front_left_30m':  (-21.2, 21.2),   # 左前方 30m (≈45°)
+    'front_right_20m': (10.0,  17.3),   # 右前方 20m
+    'rear_15m':        (0.0,  -15.0),   # 正后方 15m
     'ego_center':      (0.0,    0.0),   # 自车位置
-    'left_20m':        (0.0,   20.0),   # 正左方 20m
-    'right_20m':       (0.0,  -20.0),   # 正右方 20m
+    'left_20m':        (-20.0,  0.0),   # 正左方 20m
+    'right_20m':       (20.0,   0.0),   # 正右方 20m
 }
 
 
 # ============================================================
 # Coordinate Conversion
 # ============================================================
-def physical_to_bev(x_m, y_m):
-    """LiDAR physical coords (m) -> BEV pixel coords (col, row)."""
+#
+# BEVFormer uses mmdet3d LiDAR coordinate convention:
+#   x = right, y = forward, z = up
+#
+# BEVFormer grid convention (get_reference_points in encoder.py):
+#   col (W dim) -> x_norm -> x (right)
+#   row (H dim) -> y_norm -> y (forward)
+#   query index: idx = row * W + col  (row-major)
+#
+# Display convention (forward = up, driver's perspective):
+#   plot_x = col                  (right of vehicle = right of image)
+#   plot_y = BEV_H - 1 - row     (forward = top of image)
+#
+# For heatmaps shaped (BEV_H, BEV_W) = (row, col):
+#   display_arr = bev_to_display(arr)  flips rows so forward=up
+# ============================================================
+
+def _physical_to_grid(x_m, y_m):
+    """Physical coords (m) -> BEV grid coords (col, row).
+
+    col corresponds to x (right), row to y (forward).
+    Used internally for query index computation.
+    """
     col = (x_m - PC_RANGE[0]) / (PC_RANGE[3] - PC_RANGE[0]) * BEV_W
     row = (y_m - PC_RANGE[1]) / (PC_RANGE[4] - PC_RANGE[1]) * BEV_H
     return col, row
 
 
-def bev_to_physical(col, row):
-    """BEV pixel coords -> LiDAR physical coords (m)."""
+def physical_to_bev(x_m, y_m):
+    """Physical coords (m) -> BEV display coords (plot_x, plot_y).
+
+    Returns coordinates for matplotlib plotting with forward=up:
+      plot_x: horizontal, left of vehicle = left of image
+      plot_y: vertical, forward = top (small value)
+    """
+    col, row = _physical_to_grid(x_m, y_m)
+    plot_x = col                  # x(right) -> horizontal
+    plot_y = BEV_H - 1 - row     # y(forward) -> up (small y)
+    return plot_x, plot_y
+
+
+def bev_to_physical(plot_x, plot_y):
+    """BEV display coords -> physical coords (m)."""
+    col = plot_x
+    row = BEV_H - 1 - plot_y
     x_m = col / BEV_W * (PC_RANGE[3] - PC_RANGE[0]) + PC_RANGE[0]
     y_m = row / BEV_H * (PC_RANGE[4] - PC_RANGE[1]) + PC_RANGE[1]
     return x_m, y_m
 
 
+def bev_to_display(arr):
+    """Rotate BEV heatmap for forward=up display.
+
+    Input arr[row, col] where row=y(forward), col=x(right).
+    Output: rows flipped so row=0 (y=-51.2, back) goes to bottom.
+    Supports 2D (H, W) and 3D (H, W, C) arrays.
+    """
+    return arr[::-1, :]
+
+
 def physical_to_query_idx(x_m, y_m):
     """Physical coords -> flat query index (row-major, 200x200)."""
-    col, row = physical_to_bev(x_m, y_m)
+    col, row = _physical_to_grid(x_m, y_m)
     col = int(np.clip(round(col), 0, BEV_W - 1))
     row = int(np.clip(round(row), 0, BEV_H - 1))
     return row * BEV_W + col
 
 
 def query_idx_to_rc(idx, bev_w=BEV_W):
-    """Flat query index -> (row, col)."""
+    """Flat query index -> (row, col) in grid space."""
     return idx // bev_w, idx % bev_w
 
 
+def grid_to_display(col, row):
+    """Convert grid coords (col, row) to display coords (plot_x, plot_y)."""
+    return col, BEV_H - 1 - row
+
+
+def norm_to_display(x_norm, y_norm):
+    """Convert BEVFormer normalized coords [0,1] to display coords.
+
+    In BEVFormer: x_norm = col/W (right), y_norm = row/H (forward).
+    Returns (plot_x, plot_y) for forward-up display.
+    """
+    col = x_norm * BEV_W
+    row = y_norm * BEV_H
+    plot_x = col
+    plot_y = BEV_H - 1 - row
+    return plot_x, plot_y
+
+
 def get_representative_query_indices():
-    """Return dict of {name: (query_idx, x_m, y_m, col, row)}."""
+    """Return dict of {name: {idx, x_m, y_m, plot_x, plot_y}}."""
     result = {}
     for name, (x_m, y_m) in REPRESENTATIVE_QUERIES.items():
         idx = physical_to_query_idx(x_m, y_m)
-        col, row = physical_to_bev(x_m, y_m)
+        plot_x, plot_y = physical_to_bev(x_m, y_m)
         result[name] = {
             'idx': idx,
             'x_m': x_m, 'y_m': y_m,
-            'col': col, 'row': row,
+            'plot_x': plot_x, 'plot_y': plot_y,
         }
     return result
 
@@ -237,7 +302,7 @@ def get_3d_box_corners(box):
 
 
 def get_bev_box_corners(gt_boxes):
-    """3D boxes -> BEV pixel corners. Returns list of (4, 2) arrays."""
+    """3D boxes -> BEV display corners. Returns list of (4, 2) arrays as (plot_x, plot_y)."""
     corners_list = []
     for box in gt_boxes:
         x, y, _, dx, dy, _, yaw = box[:7]
@@ -249,8 +314,8 @@ def get_bev_box_corners(gt_boxes):
         c, s = np.cos(yaw), np.sin(yaw)
         R = np.array([[c, -s], [s, c]])
         world = (R @ local.T).T + np.array([x, y])
-        cols, rows = physical_to_bev(world[:, 0], world[:, 1])
-        corners_list.append(np.stack([cols, rows], axis=1))
+        px, py = physical_to_bev(world[:, 0], world[:, 1])
+        corners_list.append(np.stack([px, py], axis=1))
     return corners_list
 
 
@@ -282,12 +347,17 @@ def project_boxes_to_image(gt_boxes, lidar2img, img_hw):
 # ============================================================
 # Drawing Helpers
 # ============================================================
+# Tick positions and labels for forward-up BEV display
+# x-axis: left(-x) to right(+x), y-axis: forward(+y) at top to back(-y) at bottom
 _BEV_TICKS = [0, 50, 100, 150, 200]
-_BEV_TICK_LABELS_M = ['-51.2', '-25.6', '0', '25.6', '51.2']
+# x-axis: plot_x=col, col=0 is x=-51.2 (left), col=200 is x=+51.2 (right)
+_BEV_XTICK_LABELS = ['-51.2', '-25.6', '0', '25.6', '51.2']
+# y-axis: plot_y=0 is y=+51.2 (forward/top), plot_y=200 is y=-51.2 (back/bottom)
+_BEV_YTICK_LABELS = ['51.2', '25.6', '0', '-25.6', '-51.2']
 
 
 def draw_bev_boxes(ax, gt_boxes, color='white', linewidth=1.2):
-    """Draw BEV box outlines on an axis."""
+    """Draw BEV box outlines on an axis (display coords)."""
     if gt_boxes is None or len(gt_boxes) == 0:
         return
     for corners in get_bev_box_corners(gt_boxes):
@@ -297,19 +367,24 @@ def draw_bev_boxes(ax, gt_boxes, color='white', linewidth=1.2):
 
 
 def style_bev_ax(ax, gt_boxes=None, title=None):
-    """Apply common BEV axis styling: ego marker, GT boxes, physical ticks."""
+    """Apply common BEV axis styling: ego marker, GT boxes, physical ticks.
+
+    Display convention: forward=up, left=left (driver's perspective).
+    """
     ax.set_xlim(0, BEV_W)
-    ax.set_ylim(BEV_H, 0)
+    ax.set_ylim(BEV_H, 0)  # y=0 at top (forward)
     ax.set_aspect('equal')
-    ax.plot(BEV_W / 2, BEV_H / 2, marker='+', color='lime',
+    # Ego vehicle at center
+    ego_px, ego_py = physical_to_bev(0.0, 0.0)
+    ax.plot(ego_px, ego_py, marker='+', color='lime',
             markersize=10, markeredgewidth=2, zorder=10)
     draw_bev_boxes(ax, gt_boxes)
     ax.set_xticks(_BEV_TICKS)
-    ax.set_xticklabels(_BEV_TICK_LABELS_M, fontsize=8)
+    ax.set_xticklabels(_BEV_XTICK_LABELS, fontsize=8)
     ax.set_yticks(_BEV_TICKS)
-    ax.set_yticklabels(_BEV_TICK_LABELS_M, fontsize=8)
-    ax.set_xlabel('x (m)', fontsize=9)
-    ax.set_ylabel('y (m)', fontsize=9)
+    ax.set_yticklabels(_BEV_YTICK_LABELS, fontsize=8)
+    ax.set_xlabel('x (m) ← left | right →', fontsize=9)
+    ax.set_ylabel('y (m) ↑ forward', fontsize=9)
     ax.grid(True, alpha=0.15)
     if title:
         ax.set_title(title, fontsize=10)
@@ -375,12 +450,12 @@ def mark_queries_on_bev(ax, queries=None, with_labels=True):
         queries = get_representative_query_indices()
     for i, (name, q) in enumerate(queries.items()):
         color = QUERY_COLORS[i % len(QUERY_COLORS)]
-        ax.plot(q['col'], q['row'], 'o', color=color, markersize=10,
+        ax.plot(q['plot_x'], q['plot_y'], 'o', color=color, markersize=10,
                 markeredgecolor='white', markeredgewidth=1.5, zorder=20)
         if with_labels:
             ax.annotate(
                 f"{name}\n({q['x_m']:.0f},{q['y_m']:.0f})m",
-                (q['col'], q['row']),
+                (q['plot_x'], q['plot_y']),
                 textcoords='offset points', xytext=(8, -8),
                 fontsize=6, color=color, fontweight='bold',
                 bbox=dict(boxstyle='round,pad=0.2', facecolor='black',

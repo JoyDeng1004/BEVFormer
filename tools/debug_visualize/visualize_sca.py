@@ -35,7 +35,7 @@ from vis_utils import (
     BEV_H, BEV_W, PC_RANGE, CAM_NAMES, CAM_LAYOUT,
     HEAD_COLORS, HEAD_MARKERS, QUERY_COLORS,
     physical_to_bev, bev_to_physical, query_idx_to_rc,
-    get_representative_query_indices,
+    get_representative_query_indices, bev_to_display, grid_to_display,
     get_gt_and_images, load_calib, build_lidar2img,
     project_boxes_to_image, style_bev_ax, draw_bev_boxes,
     mark_queries_on_bev,
@@ -96,14 +96,14 @@ def plot_sca_query(frame_idx, layer_idx, query_name, query_info, color,
     style_bev_ax(ax_bev, gt_boxes,
                  title=f'BEV — Query "{query_name}"\n'
                        f'({query_info["x_m"]:.1f}, {query_info["y_m"]:.1f}) m')
-    ax_bev.plot(query_info['col'], query_info['row'], 'o', color=color,
+    ax_bev.plot(query_info['plot_x'], query_info['plot_y'], 'o', color=color,
                 markersize=14, markeredgecolor='white', markeredgewidth=2,
                 zorder=20)
 
     # Mark ref_3d pillar heights on BEV (they all project to same BEV cell)
     ax_bev.annotate(
-        f'idx={qidx}\nr={query_info["row"]:.0f}, c={query_info["col"]:.0f}',
-        (query_info['col'], query_info['row']),
+        f'idx={qidx}\n({query_info["x_m"]:.0f},{query_info["y_m"]:.0f})m',
+        (query_info['plot_x'], query_info['plot_y']),
         textcoords='offset points', xytext=(12, 8),
         fontsize=7, color=color, fontweight='bold',
         bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.7))
@@ -217,11 +217,12 @@ def plot_feature_change(frame_idx, layer_idx):
     q_before = data['query_before'][0]  # (40000, 256)
     q_after = data['query_after'][0]
     diff = (q_after - q_before).norm(dim=-1).numpy().reshape(BEV_H, BEV_W)
+    diff_disp = bev_to_display(diff)
 
     gt_boxes, _, _ = get_gt_and_images(frame_idx)
 
     fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(diff, cmap='hot', origin='upper',
+    im = ax.imshow(diff_disp, cmap='hot', origin='upper',
                    extent=[0, BEV_W, BEV_H, 0])
     style_bev_ax(ax, gt_boxes,
                  title=f'SCA Feature Change (L2 norm)\n'
@@ -326,6 +327,7 @@ def plot_sca_warp_compare(frame_idx, layer_idx, warp):
     q_before = data['query_before'][0]
     q_after = data['query_after'][0]
     diff_orig = (q_after - q_before).norm(dim=-1).numpy().reshape(BEV_H, BEV_W)
+    diff_orig_disp = bev_to_display(diff_orig)
 
     # Simulate warp effect: shift the BEV grid
     queries = get_representative_query_indices()
@@ -333,18 +335,19 @@ def plot_sca_warp_compare(frame_idx, layer_idx, warp):
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
 
-    im1 = ax1.imshow(diff_orig, cmap='hot', origin='upper',
+    im1 = ax1.imshow(diff_orig_disp, cmap='hot', origin='upper',
                      extent=[0, BEV_W, BEV_H, 0])
     style_bev_ax(ax1, gt_boxes, title='Original')
     mark_queries_on_bev(ax1, queries)
 
-    # Warped: shift the heatmap
+    # Warped: shift the heatmap in grid space, then rotate for display
     from scipy.ndimage import shift as ndshift
     dx_px = warp['dx_norm'] * BEV_W
     dy_px = warp['dy_norm'] * BEV_H
     diff_warped = ndshift(diff_orig, [dy_px, dx_px], order=1, mode='constant')
+    diff_warped_disp = bev_to_display(diff_warped)
 
-    im2 = ax2.imshow(diff_warped, cmap='hot', origin='upper',
+    im2 = ax2.imshow(diff_warped_disp, cmap='hot', origin='upper',
                      extent=[0, BEV_W, BEV_H, 0])
     style_bev_ax(ax2, gt_boxes,
                  title=f'Warped (dx={warp["dx_m"]:.1f}m, '

@@ -37,7 +37,7 @@ from vis_utils import (
     BEV_H, BEV_W, PC_RANGE,
     HEAD_COLORS, HEAD_MARKERS, QUERY_COLORS,
     physical_to_bev, query_idx_to_rc,
-    get_representative_query_indices,
+    get_representative_query_indices, bev_to_display, norm_to_display,
     get_gt_and_images, style_bev_ax, mark_queries_on_bev,
     make_se2_warp, apply_warp_to_bev_points, add_warp_argparse,
 )
@@ -104,15 +104,15 @@ def plot_alignment(frame_idx, layer_idx):
         qidx = q['idx']
         color = QUERY_COLORS[i % len(QUERY_COLORS)]
 
-        # ref_2d (blue circle)
+        # ref_2d (circle) — normalized (x_norm, y_norm)
         r2d = ref_2d[qidx, 0]
-        rx, ry = r2d[0].item() * BEV_W, r2d[1].item() * BEV_H
+        rx, ry = norm_to_display(r2d[0].item(), r2d[1].item())
         ax1.plot(rx, ry, 'o', color=color, markersize=10,
                  markeredgecolor='white', markeredgewidth=1.5, zorder=15)
 
         # shift_ref_2d (diamond)
         sr2d = shift_ref_2d[qidx, 0]
-        sx, sy = sr2d[0].item() * BEV_W, sr2d[1].item() * BEV_H
+        sx, sy = norm_to_display(sr2d[0].item(), sr2d[1].item())
         ax1.plot(sx, sy, 'D', color=color, markersize=8,
                  markeredgecolor='black', markeredgewidth=1, zorder=15)
 
@@ -139,8 +139,7 @@ def plot_alignment(frame_idx, layer_idx):
 
         # History side reference point
         rp_hist = rp[0, qidx, 0]  # (2,)
-        hrx = rp_hist[0].item() * BEV_W
-        hry = rp_hist[1].item() * BEV_H
+        hrx, hry = norm_to_display(rp_hist[0].item(), rp_hist[1].item())
         ax2.plot(hrx, hry, 'x', color=color, markersize=12,
                  markeredgewidth=2.5, zorder=15)
 
@@ -148,8 +147,8 @@ def plot_alignment(frame_idx, layer_idx):
         sl_hist = sl[0, qidx]  # (8, 1, 4, 2)
         for h in range(sl_hist.shape[0]):
             for p in range(sl_hist.shape[2]):
-                spx = sl_hist[h, 0, p, 0].item() * BEV_W
-                spy = sl_hist[h, 0, p, 1].item() * BEV_H
+                spx, spy = norm_to_display(
+                    sl_hist[h, 0, p, 0].item(), sl_hist[h, 0, p, 1].item())
                 ax2.plot(spx, spy, marker=HEAD_MARKERS[h % 8],
                          color=HEAD_COLORS[h % 8], markersize=5,
                          markeredgecolor='black', markeredgewidth=0.5,
@@ -193,8 +192,8 @@ def plot_temporal_comparison(frame_idx, layer_idx):
     hist_feat = obf[:, :, 0, 0].numpy()   # (40000, 256) — history
     curr_feat = obf[:, :, 0, 1].numpy()   # (40000, 256) — current
 
-    hist_rgb = _pca_rgb(hist_feat).reshape(BEV_H, BEV_W, 3)
-    curr_rgb = _pca_rgb(curr_feat).reshape(BEV_H, BEV_W, 3)
+    hist_rgb = bev_to_display(_pca_rgb(hist_feat).reshape(BEV_H, BEV_W, 3))
+    curr_rgb = bev_to_display(_pca_rgb(curr_feat).reshape(BEV_H, BEV_W, 3))
 
     gt_boxes, _, _ = get_gt_and_images(frame_idx)
     queries = get_representative_query_indices()
@@ -216,13 +215,13 @@ def plot_temporal_comparison(frame_idx, layer_idx):
 
             # History ref point
             h_rp = rp[0, qidx, 0]
-            hx, hy = h_rp[0].item() * BEV_W, h_rp[1].item() * BEV_H
+            hx, hy = norm_to_display(h_rp[0].item(), h_rp[1].item())
             ax1.plot(hx, hy, 'o', color=color, markersize=10,
                      markeredgecolor='white', markeredgewidth=1.5, zorder=15)
 
             # Current ref point
             c_rp = rp[1, qidx, 0]
-            cx, cy = c_rp[0].item() * BEV_W, c_rp[1].item() * BEV_H
+            cx, cy = norm_to_display(c_rp[0].item(), c_rp[1].item())
             ax2.plot(cx, cy, 'o', color=color, markersize=10,
                      markeredgecolor='white', markeredgewidth=1.5, zorder=15)
 
@@ -273,8 +272,8 @@ def plot_fusion_weights(frame_idx, layer_idx):
     hist_conc = aw0[:, :, 0, :].max(dim=-1).values.mean(dim=1)  # (40000,)
     curr_conc = aw0[:, :, 1, :].max(dim=-1).values.mean(dim=1)
 
-    hist_map = hist_conc.numpy().reshape(BEV_H, BEV_W)
-    curr_map = curr_conc.numpy().reshape(BEV_H, BEV_W)
+    hist_map = bev_to_display(hist_conc.numpy().reshape(BEV_H, BEV_W))
+    curr_map = bev_to_display(curr_conc.numpy().reshape(BEV_H, BEV_W))
 
     gt_boxes, _, _ = get_gt_and_images(frame_idx)
     queries = get_representative_query_indices()
@@ -374,12 +373,13 @@ def plot_tsa_warp_compare(frame_idx, layer_idx, warp):
         color = QUERY_COLORS[i % len(QUERY_COLORS)]
         r = ref_2d[qidx, 0]
         s = shift_ref_2d[qidx, 0]
-        ax1.plot(r[0].item()*BEV_W, r[1].item()*BEV_H, 'o', color=color,
+        rpx, rpy = norm_to_display(r[0].item(), r[1].item())
+        spx, spy = norm_to_display(s[0].item(), s[1].item())
+        ax1.plot(rpx, rpy, 'o', color=color,
                  markersize=8, markeredgecolor='white', zorder=15)
-        ax1.plot(s[0].item()*BEV_W, s[1].item()*BEV_H, 'D', color=color,
+        ax1.plot(spx, spy, 'D', color=color,
                  markersize=6, markeredgecolor='black', zorder=15)
-        ax1.annotate('', xy=(s[0].item()*BEV_W, s[1].item()*BEV_H),
-                     xytext=(r[0].item()*BEV_W, r[1].item()*BEV_H),
+        ax1.annotate('', xy=(spx, spy), xytext=(rpx, rpy),
                      arrowprops=dict(arrowstyle='->', color=color, lw=1.5))
 
     # Warped
@@ -392,12 +392,13 @@ def plot_tsa_warp_compare(frame_idx, layer_idx, warp):
         color = QUERY_COLORS[i % len(QUERY_COLORS)]
         r = ref_2d[qidx, 0]
         w = warped_shift[qidx, 0]
-        ax2.plot(r[0].item()*BEV_W, r[1].item()*BEV_H, 'o', color=color,
+        rpx, rpy = norm_to_display(r[0].item(), r[1].item())
+        wpx, wpy = norm_to_display(w[0].item(), w[1].item())
+        ax2.plot(rpx, rpy, 'o', color=color,
                  markersize=8, markeredgecolor='white', zorder=15)
-        ax2.plot(w[0].item()*BEV_W, w[1].item()*BEV_H, 'D', color=color,
+        ax2.plot(wpx, wpy, 'D', color=color,
                  markersize=6, markeredgecolor='black', zorder=15)
-        ax2.annotate('', xy=(w[0].item()*BEV_W, w[1].item()*BEV_H),
-                     xytext=(r[0].item()*BEV_W, r[1].item()*BEV_H),
+        ax2.annotate('', xy=(wpx, wpy), xytext=(rpx, rpy),
                      arrowprops=dict(arrowstyle='->', color=color, lw=1.5))
 
     fig.suptitle(
